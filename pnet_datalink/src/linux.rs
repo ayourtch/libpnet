@@ -409,7 +409,7 @@ impl DataLinkReceiver for DataLinkReceiverImpl {
                 let mut len = len as usize;
                 let mut pmhdr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
                 while pmhdr != ptr::null_mut() {
-                    unsafe{ println!("X cmsg_level: {}, cmsg_type: {}", (*pmhdr).cmsg_level, (*pmhdr).cmsg_type); }
+                    // unsafe{ println!("X cmsg_level: {}, cmsg_type: {}", (*pmhdr).cmsg_level, (*pmhdr).cmsg_type); }
                     if unsafe {(*pmhdr).cmsg_type == 8} {
 
                         let p = unsafe { libc::CMSG_DATA(pmhdr) as *const linux::tpacket_auxdata};
