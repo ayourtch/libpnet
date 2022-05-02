@@ -27,6 +27,26 @@ pub const PACKET_FANOUT_FLAG_ROLLOVER: libc::c_uint = 0x1000;
 #[allow(dead_code)] // following flag is unused yet
 pub const PACKET_FANOUT_FLAG_UNIQUEID: libc::c_uint = 0x2000;
 pub const PACKET_FANOUT_FLAG_DEFRAG: libc::c_uint = 0x8000;
+pub const PACKET_AUXDATA: libc::c_int = 8;
+
+// usr/include/linux/if_packet.h
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct tpacket_auxdata {
+//    pub x1: [libc::uint8_t; 20],
+    pub tp_status: u32,
+    pub tp_len: u32,
+    pub tp_snaplen: u32,
+    pub tp_mac: u16,
+    pub tp_net: u16,
+    pub tp_vlan_tci: u16,
+    pub tp_vlan_tpid: u16,
+}
+
+pub union tpacket_auxdata_union {
+    pub x1: [libc::uint8_t; 20],
+    pub auxdata: tpacket_auxdata,
+}
 
 // man 7 packet
 pub struct packet_mreq {

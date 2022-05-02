@@ -65,6 +65,9 @@ pub struct Config {
 
     /// Promiscuous mode.
     pub promiscuous: bool,
+
+    /// keep 802.1q tags in the packet (or, rather, restore them)
+    pub keep_8021q_tags: bool,
 }
 
 impl<'a> From<&'a super::Config> for Config {
@@ -77,6 +80,7 @@ impl<'a> From<&'a super::Config> for Config {
             write_timeout: config.write_timeout,
             fanout: config.linux_fanout,
             promiscuous: config.promiscuous,
+            keep_8021q_tags: true,
         }
     }
 }
@@ -91,6 +95,7 @@ impl Default for Config {
             channel_type: super::ChannelType::Layer2,
             fanout: None,
             promiscuous: true,
+            keep_8021q_tags: true,
         }
     }
 }
@@ -121,6 +126,8 @@ pub fn channel(network_interface: &NetworkInterface, config: Config) -> io::Resu
         return Err(err);
     }
 
+    let mut int_one: u32 = 1;
+
     let mut pmr: linux::packet_mreq = unsafe { mem::zeroed() };
     pmr.mr_ifindex = network_interface.index as i32;
     pmr.mr_type = linux::PACKET_MR_PROMISC as u16;
@@ -134,6 +141,25 @@ pub fn channel(network_interface: &NetworkInterface, config: Config) -> io::Resu
                 linux::PACKET_ADD_MEMBERSHIP,
                 (&pmr as *const linux::packet_mreq) as *const libc::c_void,
                 mem::size_of::<linux::packet_mreq>() as libc::socklen_t,
+            )
+        } == -1
+        {
+            let err = io::Error::last_os_error();
+            unsafe {
+                pnet_sys::close(socket);
+            }
+            return Err(err);
+        }
+    }
+    // Enable promiscuous capture
+    if config.keep_8021q_tags {
+        if unsafe {
+            libc::setsockopt(
+                socket,
+                linux::SOL_PACKET,
+                linux::PACKET_AUXDATA,
+                (&int_one as *const u32) as *const libc::c_void,
+                mem::size_of::<u32>() as libc::socklen_t,
             )
         } == -1
         {
@@ -359,11 +385,61 @@ impl DataLinkReceiver for DataLinkReceiverImpl {
         } else if ret == 0 {
             Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"))
         } else {
+            let mut cmsg_buf: [u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<linux::tpacket_auxdata>()] = unsafe { mem::zeroed() };
+
+            let mut iov = unsafe { libc::iovec { iov_base: self.read_buffer.as_mut_ptr() as *mut libc::c_void, iov_len: self.read_buffer.len() as libc::size_t } };
+            let mut msg = unsafe { libc::msghdr {
+                msg_iov: &mut iov,
+                msg_iovlen: 1,
+                msg_control: cmsg_buf.as_mut_ptr() as *mut _ as *mut libc::c_void,
+                msg_controllen: mem::size_of_val(&cmsg_buf),
+                msg_flags: 0,
+                msg_name: ptr::null_mut(),
+                msg_namelen: 0
+            } };
+
+            let len = unsafe { libc::recvmsg(self.socket.fd, &mut msg, 0) };
+
+            let mut tp_vlan_tci: u16 = 0;
+            let mut tp_vlan_tpid: u16 = 0;
+
+            if len < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                let mut len = len as usize;
+                let mut pmhdr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+                while pmhdr != ptr::null_mut() {
+                    unsafe{ println!("X cmsg_level: {}, cmsg_type: {}", (*pmhdr).cmsg_level, (*pmhdr).cmsg_type); }
+                    if unsafe {(*pmhdr).cmsg_type == 8} {
+
+                        let p = unsafe { libc::CMSG_DATA(pmhdr) as *const linux::tpacket_auxdata};
+                        // let d: *const linux::tpacket_auxdata = unsafe { p as *const linux::tpacket_auxdata };
+                        // println!("Data: {:02x?}", unsafe { &(*p)});
+                        // println!("CMSG: {:02x?}", &cmsg_buf);
+                        tp_vlan_tpid = unsafe { (*p).tp_vlan_tpid};
+                        tp_vlan_tci = unsafe { (*p).tp_vlan_tci };
+                    }
+                    pmhdr = unsafe { libc::CMSG_NXTHDR(&msg, pmhdr) };
+                }
+                if tp_vlan_tci > 0 {
+                    unsafe { std::ptr::copy(self.read_buffer[12..].as_ptr(), self.read_buffer[16..].as_mut_ptr(), len-12) };
+                    self.read_buffer[12] = ((tp_vlan_tpid >> 8) & 0xff) as u8;
+                    self.read_buffer[13] = (tp_vlan_tpid & 0xff) as u8;
+                    self.read_buffer[14] = ((tp_vlan_tci >> 8) & 0xff) as u8;
+                    self.read_buffer[15] = (tp_vlan_tci & 0xff) as u8;
+                    len = len + 4;
+                }
+
+                Ok(&self.read_buffer[0..len])
+            }
+
+            /*
             let res = pnet_sys::recv_from(self.socket.fd, &mut self.read_buffer, &mut caddr);
             match res {
                 Ok(len) => Ok(&self.read_buffer[0..len]),
                 Err(e) => Err(e),
             }
+            */
         }
     }
 }
